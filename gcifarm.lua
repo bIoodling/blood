@@ -1,4 +1,4 @@
--- GCI Grass Farm V8 | continuous straight walk-style tween
+-- GCI Grass Farm V9 | exact Y=-27 full-field CFrame tween
 if _G.GCIGrassCleanup then pcall(_G.GCIGrassCleanup) end
 if _G.GCIGrassStop then pcall(_G.GCIGrassStop) end
 local Players=game:GetService("Players")
@@ -11,9 +11,10 @@ local previous=pg:FindFirstChild("GCIGrassCollector")
 if previous then previous:Destroy() end
 pcall(function() RunService:UnbindFromRenderStep("GCIGrassCamera") end)
 
-local X0,X1,Z0,Z1=-63,35,-19,79
+local X0,X1,Z0,Z1=-62,35,-19,79
+local EXACT_Y=-27
 local LANES=7
-local SPEED=130 -- lower to 90 if collection still skips
+local SPEED=450 -- studs per second, adjustable
 local RETURN_SPEED=55
 local DROP_SPEED=10
 local RETURN_RISE=9
@@ -53,32 +54,17 @@ local function stopAll()
   r.AssemblyAngularVelocity=Vector3.zero
  end
 end
-local function tweenTo(pos,speed,id,walking)
+local function tweenTo(pos,speed,id)
  local r=root()
  if not r or id~=version then return false end
- local h=humanoid()
- local delta=pos-r.Position
- local duration=math.max(delta.Magnitude/speed,.025)
- local tween=TweenService:Create(r,TweenInfo.new(duration,Enum.EasingStyle.Linear),{
+ local duration=math.max((pos-r.Position).Magnitude/speed,.015)
+ local tw=TweenService:Create(r,TweenInfo.new(duration,Enum.EasingStyle.Linear),{
   CFrame=CFrame.new(pos)*r.CFrame.Rotation
  })
- currentTween=tween
- local moveConn
- if walking and h then
-  local direction=Vector3.new(delta.X,0,delta.Z)
-  if direction.Magnitude>.01 then
-   h:Move(direction.Unit,false)
-  end
-  moveConn=RunService.Heartbeat:Connect(function()
-   if id~=version then return end
-   r.AssemblyLinearVelocity=Vector3.zero
-  end)
- end
- tween:Play()
- local state=tween.Completed:Wait()
- if moveConn then moveConn:Disconnect() end
- if h and walking then h:Move(Vector3.zero,false) end
- if currentTween==tween then currentTween=nil end
+ currentTween=tw
+ tw:Play()
+ local state=tw.Completed:Wait()
+ if currentTween==tw then currentTween=nil end
  return id==version and state==Enum.PlaybackState.Completed
 end
 local gui=Instance.new("ScreenGui")
@@ -151,28 +137,32 @@ end
 local function farm()
  stopAll()
  local r=root()
- local h=humanoid()
- if not r or not h then return end
- standingY=r.Position.Y
- originalSpeed=h.WalkSpeed
- h.WalkSpeed=16 -- tween owns travel; keep humanoid animation active
+ if not r then return end
+ standingY=EXACT_Y
  active=true
  version+=1
  local id=version
+ local h=humanoid()
  local cam=workspace.CurrentCamera
- if cam then cam.CameraType=Enum.CameraType.Custom cam.CameraSubject=h end
+ if cam and h then
+  cam.CameraType=Enum.CameraType.Custom
+  cam.CameraSubject=h
+ end
  paint()
  task.spawn(function()
+  -- 1 -> 4 (Z -19 to 79), then across to 3,
+  -- 3 -> 2 (Z 79 to -19), repeat across adjacent X lanes.
+  -- Reverse the full path when the far side is reached.
   while active and id==version do
    for i=1,#route do
     if not active or id~=version then return end
     local p=route[i]
-    if not tweenTo(Vector3.new(p.X,standingY,p.Y),SPEED,id,true) then return end
+    if not tweenTo(Vector3.new(p.X,EXACT_Y,p.Y),SPEED,id) then return end
    end
    for i=#route-1,1,-1 do
     if not active or id~=version then return end
     local p=route[i]
-    if not tweenTo(Vector3.new(p.X,standingY,p.Y),SPEED,id,true) then return end
+    if not tweenTo(Vector3.new(p.X,EXACT_Y,p.Y),SPEED,id) then return end
    end
   end
  end)
@@ -199,7 +189,7 @@ local function stop()
   end
   if not easeTo(Vector3.new(r.Position.X,y,r.Position.Z),RETURN_SPEED) then return end
   if not easeTo(Vector3.new(-14,y,30.5),RETURN_SPEED) then return end
-  easeTo(Vector3.new(-14,standingY or -27,30.5),DROP_SPEED)
+  easeTo(Vector3.new(-14,EXACT_Y,30.5),DROP_SPEED)
  end)
 end
 local dragging,moved,fromToggle=false,false,false
@@ -237,4 +227,4 @@ local function cleanup()
 end
 _G.GCIGrassCleanup=cleanup
 _G.GCIGrassStop=cleanup
-print("GCI Grass Farm V8 loaded - straight sweep at 130 studs/s")
+print("GCI Grass Farm V9 loaded - exact Y=-27, CFrame tween")
