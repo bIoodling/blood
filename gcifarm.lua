@@ -1,4 +1,4 @@
--- GCI Grass Farm V6 | full-field fast sweeps
+-- GCI Grass Farm V7 | WalkSpeed 200 full-field sweeps
 if _G.GCIGrassCleanup then pcall(_G.GCIGrassCleanup) end
 if _G.GCIGrassStop then pcall(_G.GCIGrassStop) end
 local Players=game:GetService("Players")
@@ -16,6 +16,7 @@ local MIN_Z,MAX_Z=-19,79
 local CENTER_X,CENTER_Z=-14,30.5
 local PASSES=7 -- large hitbox: roughly 16 studs between lanes
 local CYCLE_SECONDS=2
+local FARM_WALK_SPEED=200
 local RETURN_SPEED=65
 local DROP_SPEED=10
 local RISE_HEIGHT=9
@@ -122,23 +123,20 @@ local function paint()
 end
 local function travel(destination,speed,id)
  local r=root()
- if not r or id~=serial then return false end
- local start=r.Position
- local duration=math.max((destination-start).Magnitude/speed,.025)
- local elapsed=0
- local done=false
- stopMotion()
- movement=RunService.Heartbeat:Connect(function(dt)
-  if id~=serial or not r.Parent then done=true return end
-  elapsed+=dt
-  local a=math.min(elapsed/duration,1)
-  r.CFrame=CFrame.new(start:Lerp(destination,a))*r.CFrame.Rotation
-  r.AssemblyLinearVelocity=Vector3.zero
-  if a>=1 then done=true end
- end)
- while not done and id==serial do RunService.Heartbeat:Wait() end
- stopMotion()
- return id==serial
+ local h=hum()
+ if not r or not h or id~=serial then return false end
+ -- Actual Humanoid walking keeps the character grounded and the collector active.
+ h:MoveTo(Vector3.new(destination.X,r.Position.Y,destination.Z))
+ local began=os.clock()
+ local distance=(Vector3.new(r.Position.X,0,r.Position.Z)-Vector3.new(destination.X,0,destination.Z)).Magnitude
+ local timeout=math.max(distance/FARM_WALK_SPEED*2.5,0.3)+0.3
+ while id==serial and running and h.Parent and r.Parent do
+  local delta=Vector3.new(r.Position.X-destination.X,0,r.Position.Z-destination.Z).Magnitude
+  if delta<3 then return true end
+  if os.clock()-began>timeout then return true end
+  RunService.Heartbeat:Wait()
+ end
+ return false
 end
 local function start()
  halt()
@@ -149,7 +147,7 @@ local function start()
  local id=serial
  floorY=r.Position.Y -- preserve standing height, do not float above it
  local h=hum()
- if h then savedSpeed=h.WalkSpeed end
+ if h then savedSpeed=h.WalkSpeed h.WalkSpeed=FARM_WALK_SPEED end
  local cam=workspace.CurrentCamera
  if cam then
   cam.CameraType=Enum.CameraType.Custom
@@ -163,7 +161,7 @@ local function start()
   -- use total route length to set uniform speed for ~2s sweep
   local length=0
   for i=2,#route do length+=(route[i]-route[i-1]).Magnitude end
-  local speed=length/CYCLE_SECONDS
+  local speed=FARM_WALK_SPEED
   while running and id==serial do
    for i=2,#route do
     if not running or id~=serial then return end
@@ -241,4 +239,4 @@ local function cleanup()
 end
 _G.GCIGrassCleanup=cleanup
 _G.GCIGrassStop=cleanup
-print("GCI Grass Farm V6 loaded")
+print("GCI Grass Farm V7: WalkSpeed 200 loaded")
