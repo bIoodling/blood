@@ -1,4 +1,4 @@
--- GCI Grass Farm V5: grounded walking and normal camera
+-- GCI Grass Farm V6 | full-field fast sweeps
 if _G.GCIGrassCleanup then pcall(_G.GCIGrassCleanup) end
 if _G.GCIGrassStop then pcall(_G.GCIGrassStop) end
 local Players=game:GetService("Players")
@@ -10,46 +10,59 @@ local pg=player:WaitForChild("PlayerGui")
 local old=pg:FindFirstChild("GCIGrassCollector")
 if old then old:Destroy() end
 pcall(function() RunService:UnbindFromRenderStep("GCIGrassCamera") end)
-local XMIN,XMAX,ZMIN,ZMAX=-63,35,-19,79
-local CENTER=Vector3.new(-14,-27,30.5)
-local WALK_SPEED=26 -- real humanoid speed; lower for better contact
-local STEP_RADIUS=15 -- short randomized steps, not huge jumps
-local ARRIVAL_RADIUS=3
-local RISE=8
-local RETURN_SPEED=55
+
+local MIN_X,MAX_X=-63,35
+local MIN_Z,MAX_Z=-19,79
+local CENTER_X,CENTER_Z=-14,30.5
+local PASSES=7 -- large hitbox: roughly 16 studs between lanes
+local CYCLE_SECONDS=2
+local RETURN_SPEED=65
 local DROP_SPEED=10
-local rng=Random.new()
+local RISE_HEIGHT=9
+
 local running=false
-local token=0
+local serial=0
 local cleaned=false
-local connections={}
-local returnTween=nil
+local movement=nil
+local listeners={}
 local savedSpeed=nil
+local floorY=nil
+local points={}
+for i=0,PASSES-1 do
+ local x=MIN_X+(MAX_X-MIN_X)*i/(PASSES-1)
+ if i%2==0 then
+  points[#points+1]=Vector3.new(x,0,MIN_Z)
+  points[#points+1]=Vector3.new(x,0,MAX_Z)
+ else
+  points[#points+1]=Vector3.new(x,0,MAX_Z)
+  points[#points+1]=Vector3.new(x,0,MIN_Z)
+ end
+end
+-- Connect lanes in the same continuous path
 local function root()
  local c=player.Character
  return c and c:FindFirstChild("HumanoidRootPart")
 end
-local function humanoid()
+local function hum()
  local c=player.Character
  return c and c:FindFirstChildOfClass("Humanoid")
 end
-local function track(c) connections[#connections+1]=c return c end
-local function cancelReturn()
- if returnTween then returnTween:Cancel() returnTween=nil end
-end
-local function restoreSpeed()
- local h=humanoid()
- if h and savedSpeed then h.WalkSpeed=savedSpeed end
- savedSpeed=nil
+local function track(c) listeners[#listeners+1]=c return c end
+local function stopMotion()
+ if movement then movement:Disconnect() movement=nil end
 end
 local function halt()
- token+=1
+ serial+=1
  running=false
- cancelReturn()
- local h=humanoid()
+ stopMotion()
  local r=root()
- if h and r then h:Move(Vector3.zero,false) h:MoveTo(r.Position) end
- restoreSpeed()
+ if r then
+  r.AssemblyLinearVelocity=Vector3.zero
+  r.AssemblyAngularVelocity=Vector3.zero
+ end
+ local h=hum()
+ if h and savedSpeed then h.WalkSpeed=savedSpeed end
+ savedSpeed=nil
 end
 local gui=Instance.new("ScreenGui")
 gui.Name="GCIGrassCollector"
@@ -85,6 +98,7 @@ local knob=Instance.new("Frame")
 knob.Size=UDim2.fromOffset(16,16)
 knob.Position=UDim2.fromOffset(3,3)
 knob.BackgroundColor3=Color3.new(1,1,1)
+knob.BorderSizePixel=0
 knob.Parent=switch
 Instance.new("UICorner",knob).CornerRadius=UDim.new(1,0)
 local drag=Instance.new("TextButton")
@@ -106,102 +120,125 @@ local function paint()
  TweenService:Create(switch,TweenInfo.new(.15),{BackgroundColor3=running and Color3.fromRGB(65,190,115) or Color3.fromRGB(65,65,72)}):Play()
  TweenService:Create(knob,TweenInfo.new(.15),{Position=running and UDim2.fromOffset(20,3) or UDim2.fromOffset(3,3)}):Play()
 end
-local function nextPoint(current)
- -- Random short segments, with occasional destinations across the pad.
- local x,z
- if rng:NextNumber()<.22 then
-  x=rng:NextNumber(XMIN+3,XMAX-3)
-  z=rng:NextNumber(ZMIN+3,ZMAX-3)
- else
-  x=math.clamp(current.X+rng:NextNumber(-STEP_RADIUS,STEP_RADIUS),XMIN+3,XMAX-3)
-  z=math.clamp(current.Z+rng:NextNumber(-STEP_RADIUS,STEP_RADIUS),ZMIN+3,ZMAX-3)
- end
- return Vector3.new(x,current.Y,z)
+local function travel(destination,speed,id)
+ local r=root()
+ if not r or id~=serial then return false end
+ local start=r.Position
+ local duration=math.max((destination-start).Magnitude/speed,.025)
+ local elapsed=0
+ local done=false
+ stopMotion()
+ movement=RunService.Heartbeat:Connect(function(dt)
+  if id~=serial or not r.Parent then done=true return end
+  elapsed+=dt
+  local a=math.min(elapsed/duration,1)
+  r.CFrame=CFrame.new(start:Lerp(destination,a))*r.CFrame.Rotation
+  r.AssemblyLinearVelocity=Vector3.zero
+  if a>=1 then done=true end
+ end)
+ while not done and id==serial do RunService.Heartbeat:Wait() end
+ stopMotion()
+ return id==serial
 end
 local function start()
  halt()
- local h=humanoid()
  local r=root()
- if not h or not r then return end
+ if not r then return end
  running=true
- token+=1
- local id=token
- savedSpeed=h.WalkSpeed
- h.WalkSpeed=WALK_SPEED
- paint()
- -- Leave CameraType Custom: Roblox follows its humanoid without CFrame camera jitter.
+ serial+=1
+ local id=serial
+ floorY=r.Position.Y -- preserve standing height, do not float above it
+ local h=hum()
+ if h then savedSpeed=h.WalkSpeed end
  local cam=workspace.CurrentCamera
- if cam then cam.CameraType=Enum.CameraType.Custom cam.CameraSubject=h end
+ if cam then
+  cam.CameraType=Enum.CameraType.Custom
+  if h then cam.CameraSubject=h end
+ end
+ paint()
  task.spawn(function()
-  while running and id==token and h.Parent and r.Parent do
-   local goal=nextPoint(r.Position)
-   h:MoveTo(goal)
-   local startTime=os.clock()
-   repeat
-    RunService.Heartbeat:Wait()
-   until id~=token or not running or not h.Parent or not r.Parent
-      or (Vector3.new(r.Position.X,0,r.Position.Z)-Vector3.new(goal.X,0,goal.Z)).Magnitude<ARRIVAL_RADIUS
-      or os.clock()-startTime>3.5
+  local route={}
+  route[1]=r.Position
+  for _,p in ipairs(points) do route[#route+1]=Vector3.new(p.X,floorY,p.Z) end
+  -- use total route length to set uniform speed for ~2s sweep
+  local length=0
+  for i=2,#route do length+=(route[i]-route[i-1]).Magnitude end
+  local speed=length/CYCLE_SECONDS
+  while running and id==serial do
+   for i=2,#route do
+    if not running or id~=serial then return end
+    if not travel(route[i],speed,id) then return end
+   end
+   -- reverse route to avoid a large teleport back to start
+   for i=#route-1,2,-1 do
+    if not running or id~=serial then return end
+    if not travel(route[i],speed,id) then return end
+   end
   end
  end)
-end
-local function tweenPosition(destination,speed,id)
- local r=root()
- if not r or id~=token then return false end
- local duration=math.max((destination-r.Position).Magnitude/speed,.05)
- local tween=TweenService:Create(r,TweenInfo.new(duration,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{CFrame=CFrame.new(destination)*r.CFrame.Rotation})
- returnTween=tween
- tween:Play()
- local result=tween.Completed:Wait()
- if returnTween==tween then returnTween=nil end
- return result==Enum.PlaybackState.Completed and id==token
 end
 local function stop()
  halt()
  paint()
- local id=token
+ local id=serial
  task.spawn(function()
   local r=root()
   if not r then return end
-  local highY=math.max(r.Position.Y,CENTER.Y+RISE)
-  if not tweenPosition(Vector3.new(r.Position.X,highY,r.Position.Z),RETURN_SPEED,id) then return end
-  if not tweenPosition(Vector3.new(CENTER.X,highY,CENTER.Z),RETURN_SPEED,id) then return end
-  tweenPosition(CENTER,DROP_SPEED,id)
+  local y=math.max(r.Position.Y,(floorY or r.Position.Y)+RISE_HEIGHT)
+  local function easeTo(pos,speed)
+   if id~=serial then return false end
+   local rr=root()
+   if not rr then return false end
+   local duration=math.max((rr.Position-pos).Magnitude/speed,.08)
+   local tween=TweenService:Create(rr,TweenInfo.new(duration,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{CFrame=CFrame.new(pos)*rr.CFrame.Rotation})
+   local cancelled=false
+   local conn
+   conn=RunService.Heartbeat:Connect(function()
+    if id~=serial then cancelled=true tween:Cancel() end
+   end)
+   tween:Play()
+   local state=tween.Completed:Wait()
+   conn:Disconnect()
+   return not cancelled and state==Enum.PlaybackState.Completed and id==serial
+  end
+  if not easeTo(Vector3.new(r.Position.X,y,r.Position.Z),RETURN_SPEED) then return end
+  if not easeTo(Vector3.new(CENTER_X,y,CENTER_Z),RETURN_SPEED) then return end
+  easeTo(Vector3.new(CENTER_X,floorY or -27,CENTER_Z),DROP_SPEED)
  end)
 end
-local dragging,moved,startedToggle=false,false,false
-local startInput,startPos,touchInput
+local dragging,moved,onToggle=false,false,false
+local origin,initial,activeInput
 local function begin(input,isToggle)
  if dragging then return end
  if input.UserInputType~=Enum.UserInputType.MouseButton1 and input.UserInputType~=Enum.UserInputType.Touch then return end
- dragging=true moved=false startedToggle=isToggle
- startInput=input.Position startPos=panel.Position touchInput=input
+ dragging=true moved=false onToggle=isToggle
+ origin=input.Position initial=panel.Position activeInput=input
 end
 track(drag.InputBegan:Connect(function(i) begin(i,false) end))
 track(toggle.InputBegan:Connect(function(i) begin(i,true) end))
 track(UIS.InputChanged:Connect(function(i)
  if not dragging then return end
  if i.UserInputType~=Enum.UserInputType.MouseMovement and i.UserInputType~=Enum.UserInputType.Touch then return end
- if touchInput.UserInputType==Enum.UserInputType.Touch and i~=touchInput then return end
- local delta=i.Position-startInput
+ if activeInput.UserInputType==Enum.UserInputType.Touch and i~=activeInput then return end
+ local delta=i.Position-origin
  if delta.Magnitude>7 then moved=true end
- if moved then panel.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+delta.X,startPos.Y.Scale,startPos.Y.Offset+delta.Y) end
+ if moved then panel.Position=UDim2.new(initial.X.Scale,initial.X.Offset+delta.X,initial.Y.Scale,initial.Y.Offset+delta.Y) end
 end))
 track(UIS.InputEnded:Connect(function(i)
  if not dragging then return end
- if i.UserInputType~=touchInput.UserInputType then return end
- if touchInput.UserInputType==Enum.UserInputType.Touch and i~=touchInput then return end
- local shouldToggle=startedToggle and not moved
- dragging=false touchInput=nil
- if shouldToggle then if running then stop() else start() end end
+ if i.UserInputType~=activeInput.UserInputType then return end
+ if activeInput.UserInputType==Enum.UserInputType.Touch and i~=activeInput then return end
+ local click=onToggle and not moved
+ dragging=false activeInput=nil
+ if click then if running then stop() else start() end end
 end))
 local function cleanup()
  if cleaned then return end
  cleaned=true
  halt()
- for _,c in ipairs(connections) do c:Disconnect() end
+ for _,c in ipairs(listeners) do c:Disconnect() end
  if gui.Parent then gui:Destroy() end
 end
 _G.GCIGrassCleanup=cleanup
 _G.GCIGrassStop=cleanup
-print("GCI Grass Farm V5: grounded walking enabled")
+print("GCI Grass Farm V6 loaded")
